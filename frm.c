@@ -1,7 +1,7 @@
 /*
  * $Id$
  *
- * Copyright (c) 2003 Oskari Saarenmaa <oskari@saarenmaa.fi>.
+ * Copyright (c) 2003-2004 Oskari Saarenmaa <oskari@saarenmaa.fi>.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 #ifdef __linux__
@@ -69,7 +70,7 @@ main(int argc, char **argv)
         break;
 
       case 'v' :
-        printf("frm(1) version 0.2\n");
+        printf("frm(1) version 0.3\n");
         exit(0);
     }
   }
@@ -131,8 +132,10 @@ display_folder(char *fn)
       }
       else
       {
-        strcat(lline, " ");
-        strcat(lline, p);
+        char *q = lline+strlen(lline);
+        if(!(*(p+0) == '=' && *(p+1) == '?' && *(q-1) == '=' && *(q-2) == '?'))
+          *q++ = ' ';
+        strcpy(q, p);
       }
     }
     else
@@ -154,6 +157,49 @@ display_folder(char *fn)
   return 0;
 }
 
+static char *
+utf8_decode(const char *str)
+{
+  unsigned int x, sz=strlen(str);
+  char *out=malloc(sz+4), *op=out;
+
+  for(x=0; x<sz;)
+  {
+    unsigned char C = (unsigned char)str[x];
+    unsigned int c = C, b;
+    if(c >= 0xf0)
+      b = 4;
+    else if(c >= 0xe0)
+      b = 3;
+    else if(c >= 0xc0)
+      b = 2;
+    else
+    {
+      *op++ = (char)c;
+      x++;
+      continue;
+    }
+    if(x+b > sz)
+    {
+      strcpy(op, "XXX");
+      return out;
+    }
+    c = (str[x+b-1]&63) | ((str[x+b-2]&63)<<6);
+    if(b > 2)
+      c |= (str[x+b-3]&63)<<12;
+    if(b > 3)
+      c |= (str[x+b-4]&63)<<18;
+    if(c > 0xff)
+      *op++ = '?';
+    else
+      *op++ = (char)c;
+    x += b;
+  }
+  *op = 0;
+
+  return out;
+}
+
 static void
 mime_decode(char **strvarp)
 {
@@ -162,18 +208,21 @@ mime_decode(char **strvarp)
   strp = str;
   for(;;)
   {
-    char *tstart, *start, *end, *rep;
+    char *tstart, *start, *end, *rep, *charset;
 
     p = strstr(strp, "=?");
     if(p == NULL) /* not mime encoded */
       return;
 
-    q = strchr(p+2, '?');
+    charset = p+2;
+
+    q = strchr(charset, '?');
     if(q == NULL) /* malformed */
       return;
+    *q++ = 0;
 
     tstart = p;
-    start = ++q+2;
+    start = q+2;
     end = strstr(start, "?=");
     if(end == NULL) /* malformed */
       return;
@@ -225,6 +274,13 @@ mime_decode(char **strvarp)
       strp = end + 2;
       free(rep);
       continue;
+    }
+
+    if(strcasecmp(charset, "UTF-8") == 0)
+    {
+      char *dec = utf8_decode(rep);
+      free(rep);
+      rep = dec;
     }
 
     strcpy(tstart, rep);
@@ -324,9 +380,9 @@ handle_line(char *line)
   *p = 0;
   while(isspace(*val))
     val++;
-  key = p = line;
-  while(*p)
-    *p++ = tolower(*p);
+  key = line;
+  for(p=key; *p; p++)
+    *p = tolower(*p);
 
   if(strcmp(key, "from") == 0)
   {
