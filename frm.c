@@ -31,25 +31,85 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
+#ifdef __linux__
+#include <getopt.h>
+#else
+extern char *optarg;
+extern int optind, opterr, optopt;
+#endif
+
+
+#define FRMOPT_ONE     0x0001
+#define FRMOPT_IGNORE  0x0002
+
+
+static int  display_folder(char *);
 static void display_mail();
 static void handle_line(char *line);
+static void mime_decode(char **);
 
 
 char *from, *subject, head;
+int  options = 0;
 
 
 int
 main(int argc, char **argv)
 {
-  char *fn, pline[0x2000], lline[0xffff];
+  int result, retval = 0;
+
+  while((result = getopt(argc, argv, "1v")) != -1)
+  {
+    switch(result)
+    {
+      case '1' :
+        options |= FRMOPT_ONE;
+        break;
+
+      case 'v' :
+        printf("frm(1) version 0.2\n");
+        exit(0);
+    }
+  }
+
+  if(optind < argc)
+  {
+    while(optind < argc)
+    {
+      retval |= display_folder(argv[optind++]);
+    }
+  }
+  else
+  {
+    retval |= display_folder(getenv("MAIL"));
+  }
+
+  return 0;
+}
+
+static int
+display_folder(char *fn)
+{
+  char had_ignore = 0, pline[0x2000], lline[0xffff];
   FILE *fp;
+
+  if(access(fn, R_OK) != 0)
+  {
+    perror(fn);
+    return 1;
+  }
 
   subject = NULL;
   from    = NULL;
   head    = 1;
   *lline  = 0;
-  fn = getenv("MAIL");
+
+  if(options & FRMOPT_ONE)
+    if((had_ignore = options & FRMOPT_IGNORE) == 0)
+      options |= FRMOPT_IGNORE;
+
   fp = fopen(fn, "r");
   for(;;)
   {
@@ -80,11 +140,14 @@ main(int argc, char **argv)
       handle_line(lline);
       strcpy(lline, pline);
     }
-    p = lline + strlen(lline) - 1;
+    p = strrchr(lline, 0) - 1;
     while(isspace(*p))
       *p-- = 0;
   }
   fclose(fp);
+
+  if(had_ignore == 0)
+    options &= ~FRMOPT_IGNORE;
 
   display_mail(); /* show the last mail */
 
@@ -102,13 +165,18 @@ mime_decode(char **strvarp)
     char *tstart, *start, *end, *rep;
 
     p = strstr(strp, "=?");
-    if(p == NULL)
+    if(p == NULL) /* not mime encoded */
       return;
 
-    q = strchr(p+2, '?')+1;
+    q = strchr(p+2, '?');
+    if(q == NULL) /* malformed */
+      return;
+
     tstart = p;
-    start = q+2;
+    start = ++q+2;
     end = strstr(start, "?=");
+    if(end == NULL) /* malformed */
+      return;
     rep = (char*)malloc(end-start+1);
     memset(rep, 0, end-start+1);
 
@@ -169,11 +237,15 @@ mime_decode(char **strvarp)
 static char *
 unmangle_from()
 {
-  char *p, *q;
+  char *a = NULL, *p, *q;
+  size_t len;
 
   if((p = strstr(from, " <")) != NULL)
   {
+    a = p+2;
     *p = 0;
+    if((p = strchr(a, '>')) != NULL)
+      *p = 0;
   }
   else if((p = strstr(from, " (")) != NULL)
   {
@@ -188,6 +260,13 @@ unmangle_from()
   {
     *q = 0;
     memmove(from, from+1, strlen(from)+1);
+  }
+  if(strlen(from) == 0 && a != NULL && (len = strlen(a)))
+  {
+    memmove(from+1, a, len);
+    *from = '(';
+    *(from+len+1) = ')';
+    *(from+len+2) = 0;
   }
 
   mime_decode(&from);
@@ -209,7 +288,10 @@ display_mail()
   if(!subject && !from)
     return;
 
-  printf("%-22s  %s\n", unmangle_from(), unmangle_subject());
+  if(!(options & FRMOPT_IGNORE))
+  {
+    printf("%-22s  %s\n", unmangle_from(), unmangle_subject());
+  }
 
   free(from);
   free(subject);
