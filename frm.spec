@@ -1,7 +1,7 @@
 Summary: Mailbox From / Subject Lister
 Name: frm
-Version: 0.3
-Release: 1
+Version: 0.3.1
+Release: 0.os1
 License: BSD
 Group: Applications/Mail
 Source: frm-%{version}.tar.bz2
@@ -31,6 +31,9 @@ install -o 0 -g 0 -m 755 frm $RPM_BUILD_ROOT/usr/bin/frm
 /usr/bin/frm
 
 %changelog
+* Wed Aug  3 2005 Oskari Saarenmaa <oskari@saarenmaa.fi>
+- frm 0.3.1
+
 * Wed Dec  1 2004 Oskari Saarenmaa <oskari@saarenmaa.fi>
 - frm 0.3
 

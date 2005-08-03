@@ -1,7 +1,7 @@
 /*
  * $Id$
  *
- * Copyright (c) 2003-2004 Oskari Saarenmaa <oskari@saarenmaa.fi>.
+ * Copyright (c) 2003-2005 Oskari Saarenmaa <oskari@saarenmaa.fi>.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,6 +26,8 @@
  *
  */
 
+
+#define FRM_VERSION "0.3.1"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -70,7 +72,7 @@ main(int argc, char **argv)
         break;
 
       case 'v' :
-        printf("frm(1) version 0.3\n");
+        printf("frm(1) version "FRM_VERSION"\n");
         exit(0);
     }
   }
@@ -296,18 +298,22 @@ unmangle_from()
   char *a = NULL, *p, *q;
   size_t len;
 
-  if((p = strstr(from, " <")) != NULL)
+  /* From: "Real Name" <address@example.com> */
+  if((p = strstr(from, "<")) != NULL)
   {
-    a = p+2;
+    a = p+1;
+    if(p > from && isspace(*(p-1)))
+      p--;
     *p = 0;
     if((p = strchr(a, '>')) != NULL)
       *p = 0;
   }
-  else if((p = strstr(from, " (")) != NULL)
+  /* From: address@example.com (Real Name) */
+  else if((p = strstr(from, "(")) != NULL)
   {
     if((q = strchr(p, ')')) != NULL)
       *q = 0;
-    memmove(from, p+2, strlen(p+2)+1);
+    memmove(from, p+1, strlen(p+1)+1);
   }
 
   p = from;
@@ -319,10 +325,7 @@ unmangle_from()
   }
   if(strlen(from) == 0 && a != NULL && (len = strlen(a)))
   {
-    memmove(from+1, a, len);
-    *from = '(';
-    *(from+len+1) = ')';
-    *(from+len+2) = 0;
+    memmove(from, a, len+1); /* string plus zero */
   }
 
   mime_decode(&from);
