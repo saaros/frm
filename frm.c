@@ -1,7 +1,7 @@
 /*
  * $Id$
  *
- * Copyright (c) 2003-2005 Oskari Saarenmaa <oskari@saarenmaa.fi>.
+ * Copyright (c) 2003-2008 Oskari Saarenmaa <oskari@saarenmaa.fi>.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,137 +26,287 @@
  *
  */
 
+#define FRM_VERSION "0.4"
 
-#define FRM_VERSION "0.3.1"
+/* drop pages from cache every MAP_RECYCLE bytes */
+#define MAP_RECYCLE (1024*1024)
 
+#define _GNU_SOURCE
 #include <ctype.h>
+#include <fcntl.h>
+#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
-
-#ifdef __linux__
-#include <getopt.h>
-#else
-extern char *optarg;
-extern int optind, opterr, optopt;
-#endif
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 
-#define FRMOPT_ONE     0x0001
-#define FRMOPT_IGNORE  0x0002
-
-
-static int  display_folder(char *);
-static void display_mail();
-static void handle_line(char *line);
-static void mime_decode(char **);
-
-
-char *from, *subject, head;
-int  options = 0;
-
+static int display_folder(const char *fn, int skip, int last_only);
+static void display_mail(char *from, char *subject);
+static char *read_header(const char *start, size_t llen, size_t hsize);
 
 int
 main(int argc, char **argv)
 {
   int result, retval = 0;
+  int skip = 0, last_only = 0;
 
-  while((result = getopt(argc, argv, "1v")) != -1)
-  {
-    switch(result)
+  while ((result = getopt(argc, argv, "1s:v")) != -1)
     {
-      case '1' :
-        options |= FRMOPT_ONE;
-        break;
+      switch(result)
+        {
+        case '1' :
+          last_only = 1;
+          break;
 
-      case 'v' :
-        printf("frm(1) version "FRM_VERSION"\n");
-        exit(0);
+        case 's' :
+          skip = atoi(optarg);
+          break;
+
+        case 'v' :
+          printf("frm(1) version "FRM_VERSION"\n");
+          exit(0);
+        }
     }
-  }
 
-  if(optind < argc)
-  {
-    while(optind < argc)
+  if (optind < argc)
     {
-      retval |= display_folder(argv[optind++]);
+      while (optind < argc)
+        {
+          retval |= display_folder(argv[optind++], skip, last_only);
+        }
     }
-  }
   else
-  {
-    retval |= display_folder(getenv("MAIL"));
-  }
+    {
+      retval |= display_folder(getenv("MAIL"), skip, last_only);
+    }
 
   return 0;
 }
 
 static int
-display_folder(char *fn)
+display_folder(const char *fn, int skip, int last_only)
 {
-  char had_ignore = 0, pline[0x2000], lline[0xffff];
-  FILE *fp;
+  const char new_mail_str[] = "From ";
+  const size_t new_mail_str_len = sizeof(new_mail_str)-1;
+  char *from, *subject;
+  char *p, *q, *b, *block, *body, *head;
+  struct stat st;
+  ssize_t left;
+  size_t llen, hsize, fsize;
+  off_t off;
+  int fd;
 
-  if(access(fn, R_OK) != 0)
-  {
-    perror(fn);
-    return 1;
-  }
+  fd = open(fn, O_RDONLY);
+  if (fd < 0)
+    {
+      perror(fn);
+      return 1;
+    }
+
+  if (fstat(fd, &st) < 0)
+    {
+      perror(fn);
+      return 1;
+    }
 
   subject = NULL;
-  from    = NULL;
-  head    = 1;
-  *lline  = 0;
+  from = NULL;
+  fsize = st.st_size;
 
-  if(options & FRMOPT_ONE)
-    if((had_ignore = options & FRMOPT_IGNORE) == 0)
-      options |= FRMOPT_IGNORE;
+  /* New mails start with "\n\r?From ", look for those blocks
+   * and make sure we won't miss mails that are split in
+   * two blocks (look at fsize-7 bytes on all but the last block)
+   */
+  block = mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (block == MAP_FAILED)
+    block = NULL;
 
-  fp = fopen(fn, "r");
-  for(;;)
-  {
-    char *p, *ret;
-
-    ret = fgets(pline, sizeof pline, fp);
-    if(ret == NULL || feof(fp))
-      break;
-    if(isspace(*(p=pline)))
+  head = block;
+  /* special case a bit here to seeking backwards for the last header */
+  if (block && last_only)
     {
-      if(strlen(lline) >= sizeof(lline) - sizeof(pline) - 2)
-        continue; /* discard entire line */
-      while(isspace(*p))
-        p++;
-      if(strlen(p) == 0)
-      {
-        head = 0;
-        continue;
-      }
-      else
-      {
-        char *q = lline+strlen(lline);
-        if(!(*(p+0) == '=' && *(p+1) == '?' && *(q-1) == '=' && *(q-2) == '?'))
-          *q++ = ' ';
-        strcpy(q, p);
-      }
+      for (b = block+fsize-0xffff, left=0xffff;
+           b > block;
+           b-= 0xffff, left += 0xffff)
+        {
+          p = memmem(b, left, new_mail_str, new_mail_str_len);
+          // check for \n\r
+          if (p && (*(p-1) == '\n' || (*(p-2) == '\n' && *(p-1) == '\r')))
+            {
+              head = p;
+              break;
+            }
+        }
     }
-    else
+
+  /* Look first for "From ", and then make sure that it is
+   * preceded by possibly a \r and a \n.
+   */
+  for (off=0, b=head; b; )
     {
-      handle_line(lline);
-      strcpy(lline, pline);
+      llen = b-block;
+      left = fsize-llen;
+      if (left <= 0)
+        break;
+
+      if (llen-off > MAP_RECYCLE)
+        {
+          /* drop some pages from the cache */
+          madvise(block, llen, MADV_DONTNEED);
+          off = llen;
+        }
+
+      p = memmem(b, left, new_mail_str, new_mail_str_len);
+      // check for \n\r
+      if (p && p != block)
+        if (! (*(p-1) == '\n' || (p > block+1 && *(p-2) == '\n' && *(p-1) == '\r')))
+          {
+            /* From was not preceded by \n or \n\r */
+            b = p + new_mail_str_len;
+            continue;
+          }
+
+      if (p == NULL)
+        {
+          /* No new mail was found in this block.  Increment "pos" and start again. We need
+           * to make sure that we don't increment "pos" too much, if there was a header
+           * split on block boundary we want to catch it
+           */
+          break;
+        }
+
+      /* So we found a header.  Yay. */
+      head = p;
+      left = fsize-(head-block);
+
+      /* Look for an end-of-header. */
+      for (body = NULL; body == NULL; p = q+1)
+        {
+          if ((q = memchr(p, '\n', left)) == NULL)
+            break;
+
+          left = fsize-(q-block);
+          if (left >= 0 && *(q+1) == '\n')
+            body = q+2;
+          else if (left >= 1 && *(q+1) == '\r' && *(q+2) == '\n')
+            body = q+3;
+          else
+            left = left-1;
+        }
+
+      if (body == NULL)
+        break; /* invalid mail / end of mbox */
+
+      b = body; /* for next block */
+      hsize = body-head; /* size of header */
+
+      /* read the header, look for subject: and from: */
+
+      if (from) { free(from); from = 0; }
+      if (subject) { free(subject); subject = 0; }
+
+      for (p=head; hsize>0; )
+        {
+          q = memchr(p, '\n', hsize);
+          if (q == NULL) /* end of header, apparently. */
+            break;
+          llen = q-p-1;
+
+          if (llen > 5 && strncasecmp(p, "from:", 5) == 0)
+            from = read_header(p, llen, hsize);
+          else if (llen > 8 && strncasecmp(p, "subject:", 8) == 0)
+            subject = read_header(p, llen, hsize);
+
+          if (from && subject)
+            {
+              skip --;
+              if (!last_only && skip <= 0)
+                display_mail(from, subject);
+              break;
+            }
+
+          hsize -= llen+2;
+          p = q+1;
+          if (*p == '\r')
+            {
+              hsize--;
+              p++;
+            }
+        }
+
+      /* read next mail */
     }
-    p = strrchr(lline, 0) - 1;
-    while(isspace(*p))
-      *p-- = 0;
-  }
-  fclose(fp);
 
-  if(had_ignore == 0)
-    options &= ~FRMOPT_IGNORE;
+  if (block)
+    munmap(block, fsize);
+  close(fd);
 
-  display_mail(); /* show the last mail */
+  if (last_only && from && subject)
+    display_mail(from, subject); /* show the last mail */
 
   return 0;
+}
+
+static char *
+read_header(const char *start, size_t llen, size_t hsize)
+{
+  char done=0, pline[0x2000], *p, *q, *lp = pline;
+
+  p = (char *) start;
+  q = memchr(p, ':', llen);
+  llen -= q-p-1;
+  p = q+1;
+
+  while (isspace(*p) && llen > 0)
+    {
+      p ++;
+      llen --;
+    }
+
+  if (llen > 0)
+    {
+      lp = mempcpy(pline, p, llen);
+      while (isspace(*(lp-1)))
+        {
+          lp --;
+          llen --;
+        }
+    }
+
+  for (q=p+llen+1; q<start+hsize; q=p)
+    {
+      while ((*q == '\n' || *q == '\r') && q < (start+hsize))
+        q ++;
+      if (q >= start+hsize || !isspace(*q))
+        break;
+      llen = hsize-(q-start);
+      while (llen > 0 && isspace(*q))
+        {
+          q ++;
+          llen --;
+        }
+
+      p = memchr(q, '\n', llen);
+      if (p)
+        llen = p-q;
+      else
+        done = 1;
+
+      if (lp > pline+1 && llen > 1)
+        if (!(*q == '=' && *(q+1) == '?' && *(lp-1) == '=' && *(lp-2) == '?'))
+          *lp ++ = ' ';
+      lp = mempcpy(lp, q, llen);
+
+      if (done)
+        break;
+    }
+
+  *lp = 0;
+  return strdup(pline);
 }
 
 static char *
@@ -202,10 +352,13 @@ utf8_decode(const char *str)
   return out;
 }
 
-static void
-mime_decode(char **strvarp)
+static char *
+mime_decode(char *strvarp)
 {
-  char *str = *strvarp, *strp, *p, *q;
+  char *str = strvarp, *strp, *p, *q;
+
+  if (strvarp == NULL)
+    return "(null)";
 
   strp = str;
   for(;;)
@@ -213,23 +366,22 @@ mime_decode(char **strvarp)
     char *tstart, *start, *end, *rep, *charset;
 
     p = strstr(strp, "=?");
-    if(p == NULL) /* not mime encoded */
-      return;
+    if (p == NULL) /* not mime encoded */
+      return strvarp;
 
     charset = p+2;
 
     q = strchr(charset, '?');
-    if(q == NULL) /* malformed */
-      return;
+    if (q == NULL) /* malformed */
+      return strvarp;
     *q++ = 0;
 
     tstart = p;
     start = q+2;
     end = strstr(start, "?=");
-    if(end == NULL) /* malformed */
-      return;
-    rep = (char*)malloc(end-start+1);
-    memset(rep, 0, end-start+1);
+    if (end == NULL) /* malformed */
+      return strvarp;
+    rep = calloc(end-start+1, sizeof(char));
 
     if(tolower(*q) == 'q')
     {
@@ -290,13 +442,17 @@ mime_decode(char **strvarp)
     strp = tstart+strlen(rep);
     free(rep);
   }
+  return strvarp;
 }
 
 static char *
-unmangle_from()
+unmangle_from(char *from)
 {
   char *a = NULL, *p, *q;
   size_t len;
+
+  if (from == NULL)
+    return "(unknown)";
 
   /* From: "Real Name" <address@example.com> */
   if((p = strstr(from, "<")) != NULL)
@@ -328,76 +484,11 @@ unmangle_from()
     memmove(from, a, len+1); /* string plus zero */
   }
 
-  mime_decode(&from);
-
-  return from;
-}
-
-static char *
-unmangle_subject()
-{
-  mime_decode(&subject);
-
-  return subject;
+  return mime_decode(from);
 }
 
 static void
-display_mail()
+display_mail(char *from, char *subject)
 {
-  if(!subject && !from)
-    return;
-
-  if(!(options & FRMOPT_IGNORE))
-  {
-    printf("%-22s  %s\n", unmangle_from(), unmangle_subject());
-  }
-
-  free(from);
-  free(subject);
-
-  from    = NULL;
-  subject = NULL;
-}
-
-static void
-handle_line(char *line)
-{
-  char *key, *val, *p;
-
-  if(strstr(line, "From ") == line)
-  {
-    display_mail();
-
-    head    = 1;
-    from    = strdup("<no sender>");
-    subject = strdup("<no subject>");
-
-    return;
-  }
-  else if(!head || (p = strchr(line, ':')) == NULL)
-  {
-    return;
-  }
-
-  val = p+1;
-  *p = 0;
-  while(isspace(*val))
-    val++;
-  key = line;
-  for(p=key; *p; p++)
-    *p = tolower(*p);
-
-  if(strcmp(key, "from") == 0)
-  {
-    free(from);
-    from = strdup(val);
-  }
-  else if(strcmp(key, "subject") == 0)
-  {
-    free(subject);
-    if(!strlen(val))
-      subject = strdup("<empty subject>");
-    else
-      subject = strdup(val);
-  }
+  printf("%-22s  %s\n", unmangle_from(from), mime_decode(subject));
 }

@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-O2 -g -pedantic -Wall
+CFLAGS=-Os -g -Wall
 
 all: frm
 

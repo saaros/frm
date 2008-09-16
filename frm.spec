@@ -1,7 +1,7 @@
 Summary: Mailbox From / Subject Lister
 Name: frm
-Version: 0.3.1
-Release: 0.os1
+Version: 0.4
+Release: 0.os1%{?dist}
 License: BSD
 Group: Applications/Mail
 Source: frm-%{version}.tar.bz2
@@ -9,8 +9,8 @@ BuildRoot: %{_tmppath}/%{name}-%{version}-root
 Packager: Oskari Saarenmaa <oskari@saarenmaa.fi>
 
 %description
-frm(1) is a mailbox From / Subject lister, similiar to the 'frm' included in
-Elm's distribution.
+frm(1) is a mailbox from / subject lister, similar to the
+frm utility in Elm mailer's distribution.
 
 %prep
 %setup -q -n frm
@@ -23,14 +23,17 @@ rm -rf $RPM_BUILD_ROOT
 
 %install
 rm -rf $RPM_BUILD_ROOT
-mkdir -p $RPM_BUILD_ROOT/usr/bin
-install -o 0 -g 0 -m 755 frm $RPM_BUILD_ROOT/usr/bin/frm
+mkdir -p $RPM_BUILD_ROOT/%{_bindir}
+install -m 755 frm $RPM_BUILD_ROOT/%{_bindir}/frm
 
 %files
 %defattr(-,root,root)
-/usr/bin/frm
+%{_bindir}/frm
 
 %changelog
+* Tue Sep 16 2008 Oskari Saarenmaa <oskari@saarenmaa.fi>
+- frm 0.4 - mmap
+
 * Wed Aug  3 2005 Oskari Saarenmaa <oskari@saarenmaa.fi>
 - frm 0.3.1
 
