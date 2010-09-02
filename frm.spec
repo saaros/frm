@@ -1,6 +1,6 @@
 Summary: Mailbox From / Subject Lister
 Name: frm
-Version: 0.4
+Version: 0.5
 Release: 0.os1%{?dist}
 License: BSD
 Group: Applications/Mail
@@ -31,6 +31,9 @@ install -m 755 frm $RPM_BUILD_ROOT/%{_bindir}/frm
 %{_bindir}/frm
 
 %changelog
+* Thu Sep  2 2010 Oskari Saarenmaa <oskari@saarenmaa.fi>
+- frm 0.5 - utf8
+
 * Tue Sep 16 2008 Oskari Saarenmaa <oskari@saarenmaa.fi>
 - frm 0.4 - mmap
 

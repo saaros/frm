@@ -1,7 +1,7 @@
 /*
  * $Id$
  *
- * Copyright (c) 2003-2008 Oskari Saarenmaa <oskari@saarenmaa.fi>.
+ * Copyright (c) 2003-2010 Oskari Saarenmaa <oskari@saarenmaa.fi>.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,7 +26,7 @@
  *
  */
 
-#define FRM_VERSION "0.4"
+#define FRM_VERSION "0.5"
 
 /* drop pages from cache every MAP_RECYCLE bytes */
 #define MAP_RECYCLE (1024*1024)
@@ -43,16 +43,25 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+#include <locale.h>
+#include <langinfo.h>
+
+#include "utf8.h"
 
 static int display_folder(const char *fn, int skip, int last_only);
 static void display_mail(char *from, char *subject);
 static char *read_header(const char *start, size_t llen, size_t hsize);
+
+static int is_utf8 = 0;
 
 int
 main(int argc, char **argv)
 {
   int result, retval = 0;
   int skip = 0, last_only = 0;
+
+  setlocale(LC_CTYPE, "");
+  is_utf8 = strcmp(nl_langinfo(CODESET), "UTF-8") == 0;
 
   while ((result = getopt(argc, argv, "1s:v")) != -1)
     {
@@ -310,49 +319,6 @@ read_header(const char *start, size_t llen, size_t hsize)
 }
 
 static char *
-utf8_decode(const char *str)
-{
-  unsigned int x, sz=strlen(str);
-  char *out=malloc(sz+4), *op=out;
-
-  for(x=0; x<sz;)
-  {
-    unsigned char C = (unsigned char)str[x];
-    unsigned int c = C, b;
-    if(c >= 0xf0)
-      b = 4;
-    else if(c >= 0xe0)
-      b = 3;
-    else if(c >= 0xc0)
-      b = 2;
-    else
-    {
-      *op++ = (char)c;
-      x++;
-      continue;
-    }
-    if(x+b > sz)
-    {
-      strcpy(op, "XXX");
-      return out;
-    }
-    c = (str[x+b-1]&63) | ((str[x+b-2]&63)<<6);
-    if(b > 2)
-      c |= (str[x+b-3]&63)<<12;
-    if(b > 3)
-      c |= (str[x+b-4]&63)<<18;
-    if(c > 0xff)
-      *op++ = '?';
-    else
-      *op++ = (char)c;
-    x += b;
-  }
-  *op = 0;
-
-  return out;
-}
-
-static char *
 mime_decode(char *strvarp)
 {
   char *str = strvarp, *strp, *p, *q;
@@ -364,6 +330,7 @@ mime_decode(char *strvarp)
   for(;;)
   {
     char *tstart, *start, *end, *rep, *charset;
+    int cs_utf8;
 
     p = strstr(strp, "=?");
     if (p == NULL) /* not mime encoded */
@@ -430,11 +397,20 @@ mime_decode(char *strvarp)
       continue;
     }
 
-    if(strcasecmp(charset, "UTF-8") == 0)
+    cs_utf8 = strcasecmp(charset, "UTF-8") == 0;
+    if (cs_utf8 && !is_utf8)
     {
-      char *dec = utf8_decode(rep);
+      size_t len = strlen(rep);
+      char *dec = (char *) fg_utf8_decode((unsigned char *) rep, &len);
       free(rep);
       rep = dec;
+    }
+    else if (!cs_utf8 && is_utf8)
+    {
+      size_t len = strlen(rep);
+      char *enc = (char *) fg_utf8_encode((unsigned char *) rep, &len);
+      free(rep);
+      rep = enc;
     }
 
     strcpy(tstart, rep);
